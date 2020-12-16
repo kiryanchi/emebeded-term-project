@@ -1,58 +1,24 @@
-#include <stdio.h>
-#include <stdint.h>
-#include <unistd.h>
-#include <stdlib.h>
-#include <fcntl.h>
-#include <linux/i2c-dev.h>
-#include <i2c/smbus.h>
-#include <sys/ioctl.h>
+#include "humidity.h"
 
-#define DEV_PATH "/dev/i2c-1"
-#define DEV_ID 0x5F
-#define WHO_AM_I 0x0F
-#define CTRL_REG1 0x20
-#define CTRL_REG2 0x21
-
-#define T0_OUT_L 0x3C
-#define T0_OUT_H 0x3D
-#define T1_OUT_L 0x3E
-#define T1_OUT_H 0x3F
-#define T0_degC_x8 0x32
-#define T1_degC_x8 0x33
-#define T1_T0_MSB 0x35
-
-#define TEMP_OUT_L 0x2A
-#define TEMP_OUT_H 0x2B
-
-#define H0_T0_OUT_L 0X36
-#define H0_T0_OUT_H 0x37
-#define H1_T0_OUT_L 0x3A
-#define H1_T0_OUT_H 0x3B
-#define H0_rH_x2 0x30
-#define H1_rH_x2 0x31
-
-#define H_T_OUT_L 0x28
-#define H_T_OUT_H 0x29
-
-void delay(int);
-
-int main(void)
+void get_humi_temp(int fd, double* result)
 {
-  int fd = 0;
   uint8_t status = 0;
 
-  if ((fd = open(DEV_PATH, O_RDWR)) < 0) {
+  if ((fd = open(DEV_PATH, O_RDWR)) < 0)
+  {
     perror("Unable to open i2c device");
     exit(1);
   }
 
-  if (ioctl(fd, I2C_SLAVE, DEV_ID) < 0) {
+  if (ioctl(fd, I2C_SLAVE, DEV_ID) < 0)
+  {
     perror("Unable to configure i2c slave device");
     close(fd);
     exit(1);
   }
 
-  if (i2c_smbus_read_byte_data(fd, WHO_AM_I) != 0xBC) {
+  if (i2c_smbus_read_byte_data(fd, WHO_AM_I) != 0xBC)
+  {
     printf("%s\n", "who_am_i error");
     close(fd);
     exit(1);
@@ -68,7 +34,8 @@ int main(void)
   i2c_smbus_write_byte_data(fd, CTRL_REG2, 0x01);
 
   // wait until measurement is completed
-  do {
+  do
+  {
     delay(25);
     status = i2c_smbus_read_byte_data(fd, CTRL_REG2);
   } while (status != 0);
@@ -133,16 +100,50 @@ int main(void)
 
   double H_rH = (h_gradient_m * H_T_OUT) + h_intercept_c;
 
-  printf("Temp (from humid) = %.1fC\n", T_DegC);
-  printf("Humidity = %.0f%% rH\n", H_rH);
-
-  // power off
-  i2c_smbus_write_byte_data(fd, CTRL_REG1, 0x00);
-
-  return 0;
+  result[0] = T_DegC;
+  result[1] = H_rH;
 }
 
-void delay(int t)
+// power off
+void power_off_humi_temp(int fd)
 {
-  usleep(t*1000);
+  i2c_smbus_write_byte_data(fd, CTRL_REG1, 0x00);
+}
+
+static void delay(int t)
+{
+  usleep(t * 1000);
+}
+
+void *humi_thread_renewal(void* arg)
+{
+  double humi_result[2];
+  int temp = 0, humi = 0;
+  FILE* fp;
+
+  while(!humi_thr_exit)
+  {
+    fp = fopen("humi_data", "w");
+    get_humi_temp(humi_fd, humi_result);
+    temp = humi_result[0];
+    humi = humi_result[1];
+
+    fprintf(fp, "%d&%d\n", temp, humi);
+
+    fclose(fp);
+
+    delay(1000);
+  }
+}
+
+void humi_thread_start()
+{
+  humi_thr_exit = false;
+  humi_thr_id = pthread_create(&humi_thread, NULL, humi_thread_renewal, NULL);
+}
+
+void humi_thread_stop()
+{
+  humi_thr_exit = true;
+  humi_thr_id = pthread_join(humi_thread, &humi_thread_return);
 }
